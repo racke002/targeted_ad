@@ -1,0 +1,265 @@
+library("dplyr")
+install.packages('pastecs')
+library("pastecs")
+install.packages('caTools')
+library("caTools")
+install.packages('multcomp')
+library("multcomp")
+
+raw <- read.table(file = "C:/Users/Ryan/Desktop/Python Projects/marketing_campaign.csv", header=TRUE, sep=",")
+summary(raw)
+nrow(raw)
+#1) Perform data hygiene:
+#a)	Delete rows with missing /NA values
+sum(is.na(raw))
+MC <- na.omit(raw)
+sum(is.na(MC))
+
+#b) Delete rows of those type of "Marital_Status" with <40 records (sample is too small)
+unique(MC$Marital_Status)
+sum(MC$Marital_Status == "Single" )
+sum(MC$Marital_Status == "Together")
+sum(MC$Marital_Status == "Married" )
+sum(MC$Marital_Status == "Divorced" )
+sum(MC$Marital_Status == "Widow" )
+sum(MC$Marital_Status == "Alone" )
+sum(MC$Marital_Status == "Absurd" )
+sum(MC$Marital_Status == "YOLO" )
+#Marital statuses Alone, Absurd and YOLO have < 40 instances 
+MC1 <- MC[!(MC$Marital_Status=="Absurd" | MC$Marital_Status=="Alone" | MC$Marital_Status=="YOLO"),]
+nrow(MC1)
+
+#removing outliers
+boxplot(MC1$MntGoldProds)
+MC <- remove_outliers(MC1, c('Income'))
+nrow(MC)
+
+#2) Do one-way ANOVA for Income~ Marital_Status
+ano <- aov(MC$Income ~ MC$Marital_Status)
+summary(ano)
+hist(ano$residuals)
+TukeyHSD(ano)
+MSE = 429460995
+SD = sqrt(MSE)
+SD
+#3) Do contrast test to see if average of means of income for widow and divorced = that of married and together.\
+MC$Marital_Status = factor(MC$Marital_Status, levels=unique(MC$Marital_Status))
+boxplot(Income ~ Marital_Status, data = MC, ylab="Income",xlab="Marital Status")
+
+meanWD <- mean(MC[which(MC$Marital_Status == "Widow" | MC$Marital_Status == "Divorced"),]$Income)
+meanMT <- mean(MC[which(MC$Marital_Status == "married" | MC$Marital_Status == "Together"),]$Income)
+boxplot(MC[which(MC$Marital_Status == "Widow" | MC$Marital_Status == "Divorced"),]$Income, 
+        MC[which(MC$Marital_Status == "married" | MC$Marital_Status == "Together"),]$Income)
+meanWD - meanMT
+#the difference in means is only around 1800 dollars so we do a ttest to test significance
+result <- t.test(MC[which(MC$Marital_Status == "Widow" | MC$Marital_Status == "Divorced"),]$Income, 
+                MC[which(MC$Marital_Status == "married" | MC$Marital_Status == "Together"),]$Income)
+result
+#Here we can see that there doesn't appear to be a significant difference between 
+#the means of the widowed/divorced and married together groups due to p-value = 0.20
+
+MC$Marital_Status = factor(MC$Marital_Status, levels=unique(MC$Marital_Status))
+levels(MC$Marital_Status)
+Cons = list(Diff= c(0,-0.5,-0.5,0.5,0.5))
+LM1 <- lm(Income ~ Marital_Status, data=MC)
+summary(LM1)
+SLSQ = lsmeans(LM1, "Marital_Status")
+Contrasts <- contrast(SLSQ, Cons)
+summary(Contrasts)
+summary(Contrasts)$p.value
+E <- summary(Contrasts)$estimate
+T <- summary(Contrasts)$t.ratio
+SE <- summary(Contrasts)$SE
+round(E-T*SE, 0) 
+round(E+T*SE, 0)
+#CI of SE is 0 - 5918 with p-value of 0.045 making it significant 
+
+# 4)	Do two-way ANOVA to see if there is interactive effect of two factors (Marital_Status * Education) on Income
+EDU <- aov(Income ~ Marital_Status*Education, data = MC)
+EDU
+summary(EDU)
+hist(EDU$residuals)
+plot(EDU,1)
+EDU_res <- residuals(object = EDU)
+shapiro.test(EDU_res)
+#our extremely low p-value for the shapiro test tells us that 
+#the data is not normally distributed
+
+# 5)	To build logistic regression model to predict "Response" using variables ("Education"           "Marital_Status"   "Income"  "Kidhome"     "Complaint" 
+# "Teenhome"     "Recency"    "MntWines"   "MntFruits"   "MntMeatProducts"    "MntFishProducts"     "MntSweetProducts"    "MntGoldProds"    "NumDealsPurchases"
+# "NumWebPurchases"     "NumCatalogPurchases" "NumStorePurchases"   "NumWebVisitsMonth  ) as candidates of explanatory variables: 
+GLM <- glm(formula = Response ~ Education + Marital_Status + Income + Teenhome 
+           + Recency + MntWines + MntFruits + MntMeatProducts + MntFishProducts 
+           + MntSweetProducts + MntGoldProds + NumDealsPurchases + NumWebPurchases 
+           + NumCatalogPurchases + NumStorePurchases + NumWebVisitsMonth, 
+             data = MC, family =binomial)
+summary(GLM)
+AIC(GLM)
+# selecting prediction variables 
+final_GLM <- step(GLM, direction = "both")
+summary(final_GLM)
+AIC(final_GLM)
+#we can see that using the step method slightly improved our AIC score
+
+#odds ratio for logistic regression
+exp(final_GLM$coefficients)
+#odds ratio for recency = 0.97
+
+#a)	Split 7:3 for training and validation data
+set.seed(1)
+row_num <-  sample(1:nrow(MC), 0.7*nrow(MC))
+TrainData_MC <- MC[row_num,]
+ValData_MC <- MC[-row_num,]
+nrow(TrainData_MC)
+nrow(ValData_MC)
+
+#b)	Take into consideration of p-values, p-value of F test, AIC index, R^2 value, correlation, and RMSE to determine the best model
+Train_GLM <- glm(formula = Response ~ Education + Marital_Status + Income + Teenhome + Recency + MntWines + MntFruits + MntMeatProducts
+             + MntFishProducts + MntSweetProducts + MntGoldProds + NumDealsPurchases + NumWebPurchases + NumCatalogPurchases + NumStorePurchases 
+             + NumWebVisitsMonth, data = TrainData_MC, family =binomial)
+summary(Train_GLM)
+
+GLM2 <- step(Train_GLM, direction='both')
+summary(GLM2)
+AIC(GLM2)
+#Training data (with set seed)obtains AIC = 908.6624
+
+#c)	Use your model to predict this customer's chance of responding:
+#  PhD, Married, Income=80800, Kidhome=0, Teenhome=2, Recency=7, MntWines=1006
+#  MntFruit=50, MntMeat=10, MntFish=80, MntSweet=60, MntGold=95, NumDeal=2
+#  NumWeb=10, NumCatalog=4, NumStore=15, NumWebVist=10, Complain=0
+
+GLM_predict <-predict(GLM2, data.frame(Education = "PhD", Marital_Status = "Married", 
+                      Income=80800, Kidhome=0, Teenhome=2, Recency=7,
+                      MntWines=1006, MntFruits=50, MntMeatProducts=10, 
+                      MntFishProducts=80, MntSweetProducts=60, MntGoldProds=95,
+                      NumDealsPurchases=2, NumWebPurchases=10, NumCatalogPurchases=4, 
+                      NumStorePurchases=15, NumWebVisitsMonth=10, Complain=0))
+
+Prediction <- predict(GLM2, newdata=ValData_MC, type="response")
+Pred_Error <- ValData_MC$Response-Prediction 
+plot(Pred_Error)
+RMSE <- sqrt(mean(Pred_Error^2))
+RMSE
+#RMSE = 0.3438
+
+#d)	Describe attributes of the top 20 percent of customers who would respond most likely.
+Test_20 <- ValData_MC
+Test_20$Prediction <- Prediction
+mean(Test_20$Prediction)
+Test_20 <- Test_20[order(-Test_20$Prediction),]
+Top20 <- head(Test_20,round(nrow(Test_20)*0.2,0))
+
+Top20
+sum(Top20$Education == "PhD")/length(Top20$Education)
+sum(Top20$Education == "Graduation")/length(Top20$Education)
+sum(Top20$Education == "2n Cycle")/length(Top20$Education)
+sum(Top20$Education == "Master")/length(Top20$Education)
+sum(Top20$Education == "Basic")/length(Top20$Education)
+
+sum(Top20$Marital_Status == "Married")/length(Top20$Marital_Status)
+sum(Top20$Marital_Status == "Divorced")/length(Top20$Marital_Status)
+sum(Top20$Marital_Status == "Single")/length(Top20$Marital_Status)
+sum(Top20$Marital_Status == "Together")/length(Top20$Marital_Status)
+sum(Top20$Marital_Status == "Widow")/length(Top20$Marital_Status)
+
+Table_20 <- data.frame(Attributes =  c("Education", "Marital_Status", 
+                       'Income', 'Kidhome', 'Teenhome', 'Recency',
+                       'MntWines', 'MntFruits', 'MntMeatProducts', 
+                       'MntFishProducts', 'MntSweetProducts', 'MntGoldProds',
+                       'NumDealsPurchases', 'NumWebPurchases', 'NumCatalogPurchases', 
+                       'NumStorePurchases', 'NumWebVisitsMonth', 'Complain'),
+                       Top_20 = c(names(which.max(table(Test_20$Education))),
+                       names(which.max(table(Test_20$Marital_Status))), 
+                       round(mean(Top20$Income), 0),
+                       round(mean(Top20$Kidhome), 2),
+                       round(mean(Top20$Teenhome), 2),
+                       round(mean(Top20$Recency), 0),
+                       round(mean(Top20$MntWines), 0),
+                       round(mean(Top20$MntFruit), 0),
+                       round(mean(Top20$MntMeat), 0),
+                       round(mean(Top20$MntFish), 0),
+                       round(mean(Top20$MntSweet), 0),
+                       round(mean(Top20$MntGold), 0),
+                       round(mean(Top20$NumDeal), 2),
+                       round(mean(Top20$NumWebPurchases), 2),
+                       round(mean(Top20$NumCatalog), 2),
+                       round(mean(Top20$NumStore), 2),
+                       round(mean(Top20$NumWebVisitsMonth), 2),
+                       round(mean(Top20$Complain), 2)))
+
+Table_20
+
+
+#Describing attributes of the other 80%
+Test_80 <- ValData_MC
+Test_80$Prediction <- Prediction
+mean(Test_80$Prediction)
+Test_80 <- Test_80[order(Test_80$Prediction),]
+other80 <- head(Test_80,round(nrow(Test_80)*0.8,0))
+
+sum(other80$Education == "PhD")/length(other80$Education)
+sum(other80$Education == "Graduation")/length(other80$Education)
+sum(other80$Education == "2n Cycle")/length(other80$Education)
+sum(other80$Education == "Master")/length(other80$Education)
+sum(other80$Education == "Basic")/length(other80$Education)
+
+sum(other80$Marital_Status == "Married")/length(other80$Marital_Status)
+sum(other80$Marital_Status == "Divorced")/length(other80$Marital_Status)
+sum(other80$Marital_Status == "Single")/length(other80$Marital_Status)
+sum(other80$Marital_Status == "Together")/length(other80$Marital_Status)
+sum(other80$Marital_Status == "Widow")/length(other80$Marital_Status)
+
+Table_80 <- data.frame(Attributes =  c("Education", "Marital_Status", 
+                                       'Income', 'Kidhome', 'Teenhome', 'Recency',
+                                       'MntWines', 'MntFruits', 'MntMeatProducts', 
+                                       'MntFishProducts', 'MntSweetProducts', 'MntGoldProds',
+                                       'NumDealsPurchases', 'NumWebPurchases', 'NumCatalogPurchases', 
+                                       'NumStorePurchases', 'NumWebVisitsMonth', 'Complain'),
+                       Other_80 = c(names(which.max(table(other80$Education))),
+                                  names(which.max(table(other80$Marital_Status))), 
+                                  round(mean(other80$Income), 0),
+                                  round(mean(other80$Kidhome), 2),
+                                  round(mean(other80$Teenhome), 2),
+                                  round(mean(other80$Recency), 0),
+                                  round(mean(other80$MntWines), 0),
+                                  round(mean(other80$MntFruit), 0),
+                                  round(mean(other80$MntMeat), 0),
+                                  round(mean(other80$MntFish), 0),
+                                  round(mean(other80$MntSweet), 0),
+                                  round(mean(other80$MntGold), 0),
+                                  round(mean(other80$NumDeal), 2),
+                                  round(mean(other80$NumWebPurchases), 2),
+                                  round(mean(other80$NumCatalog), 2),
+                                  round(mean(other80$NumStore), 2),
+                                  round(mean(other80$NumWebVisitsMonth), 2),
+                                  round(mean(other80$Complain), 2)))
+
+Table_80
+
+t.test(Top20$Income, other80$Income, paired = FALSE, alternative = "two.sided")
+t.test(Top20$Education == "PhD", other80$Education == "PhD", paired = FALSE, alternative = "two.sided")
+t.test(Top20$Education == "Master", other80$Education == "Master", paired = FALSE, alternative = "two.sided")
+t.test(Top20$Education == "Graduation", other80$Education == "Graduation", paired = FALSE, alternative = "two.sided")
+t.test(Top20$Education == "Basic", other80$Education == "Basic", paired = FALSE, alternative = "two.sided")
+t.test(Top20$Education == "2n Cycle", other80$Education == "2n Cycle", paired = FALSE, alternative = "two.sided")
+t.test(Top20$Marital_Status == "Married", other80$Marital_Status == "Married", paired = FALSE, alternative = "two.sided")
+t.test(Top20$Marital_Status == "Divorced", other80$Marital_Status == "Divorced", paired = FALSE, alternative = "two.sided")
+t.test(Top20$Marital_Status == "Single", other80$Marital_Status == "Single", paired = FALSE, alternative = "two.sided")
+t.test(Top20$Marital_Status == "Together", other80$Marital_Status == "Together", paired = FALSE, alternative = "two.sided")
+t.test(Top20$Marital_Status == "Widow", other80$Marital_Status == "Widow", paired = FALSE, alternative = "two.sided")
+t.test(Top20$Kidhome, other80$Kidhome, paired = FALSE, alternative = "two.sided")
+t.test(Top20$Teenhome, other80$Teenhome, paired = FALSE, alternative = "two.sided")
+t.test(Top20$Recency, other80$Recency, paired = FALSE, alternative = "two.sided")
+t.test(Top20$MntWines, other80$MntWines, paired = FALSE, alternative = "two.sided")
+t.test(Top20$MntFruits, other80$MntFruits, paired = FALSE, alternative = "two.sided")
+t.test(Top20$MntMeatProducts, other80$MntMeatProducts, paired = FALSE, alternative = "two.sided")
+t.test(Top20$MntFishProducts, other80$MntFishProducts, paired = FALSE, alternative = "two.sided")
+t.test(Top20$MntSweetProducts, other80$MntSweetProducts, paired = FALSE, alternative = "two.sided")
+t.test(Top20$MntGoldProds, other80$MntGoldProds, paired = FALSE, alternative = "two.sided")
+t.test(Top20$NumDealsPurchases, other80$NumDealsPurchases, paired = FALSE, alternative = "two.sided")
+t.test(Top20$NumWebPurchases, other80$NumWebPurchases, paired = FALSE, alternative = "two.sided")
+t.test(Top20$NumCatalogPurchases, other80$NumCatalogPurchases, paired = FALSE, alternative = "two.sided")
+t.test(Top20$NumStorePurchases, other80$NumStorePurchases, paired = FALSE, alternative = "two.sided")
+t.test(Top20$NumWebVisitsMonth, other80$NumWebVisitsMonth, paired = FALSE, alternative = "two.sided")
+t.test(Top20$Complain, other80$Complain, paired = FALSE, alternative = "two.sided")
